@@ -1,0 +1,369 @@
+/**
+   What is this file?
+   This is an arduino example that calculates accurate roll,pitch,yaw from raw gyro/accelerometer data
+   It has a calibration stage which removes most of the gyro drift and a complementary filter
+   that combines gyro and accelerometer angles to produce roll/pitch angles that don't drift (like the gyro angle) and aren't noisy
+   (like the accel angles). As there is no magnetic compass on the nano iot 33, it's not possible to 'complement' the yaw
+   - hence yaw will drift and is 'relative'.
+
+
+   
+*/
+
+
+
+
+// https://github.com/owennewo/Arduino_LSM6DS3/blob/master/examples/RollPitchYaw/RollPitchYaw.ino
+// ^^^ . orgininal file for reading and filtering gyro and accelerometer data
+
+#include <Arduino_LSM6DS3.h>
+#include <Wire.h>
+
+float accelX,            accelY,             accelZ,            // units m/s/s i.e. accelZ if often 9.8 (gravity)
+      gyroX,             gyroY,              gyroZ,             // units dps (degrees per second)
+      gyroDriftX,        gyroDriftY,         gyroDriftZ,        // units dps
+      gyroRoll,          gyroPitch,          gyroYaw,           // units degrees (expect major drift)
+      gyroCorrectedRoll, gyroCorrectedPitch, gyroCorrectedYaw,  // units degrees (expect minor drift)
+      accRoll,           accPitch,           accYaw,            // units degrees (roll and pitch noisy, yaw not possible)
+      complementaryRoll, complementaryPitch, complementaryYaw;  // units degrees (excellent roll, pitch, yaw minor drift)
+
+long lastTime;
+long lastInterval;
+
+#include <Adafruit_NeoPixel.h>
+
+#ifdef __AVR__
+  #include <avr/power.h>
+#endif
+
+//define the digital pin that the LED strip is connected to
+#define PIN 2
+//bool isKickfliping = false;
+int kickfliping = 0;
+int flipCounter = 0;
+int shuv = 0;
+int shuvCounter = 0;
+int pop = 0;
+int popCounter = 0;
+float xAcc, yAcc, zAcc;
+float counter = 1;
+int colorfactor;
+int Scolorfactor;
+int Pcolorfactor;
+
+int R = 0;
+int G = 0; 
+int B = 0;
+//the first parameter is the number of LEDs you have - change for your strip
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(18, PIN, NEO_GRB + NEO_KHZ800);
+
+
+
+
+
+
+void setup() {
+  accRoll = 1.0;
+  accPitch = 1.0;
+  
+  gyroRoll = 1.0;
+  gyroPitch = 1.0;
+  gyroCorrectedRoll = 1;
+  gyroCorrectedPitch = 1;
+  Serial.begin(96000);
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  // this sketch will wait until something connects to serial!
+  // this could be 'serial monitor', 'serial plotter' or 'processing.org P3D client' (see ./processing/RollPitchYaw3d.pde file)
+//  while (!Serial);
+
+  if (!IMU.begin()) {
+    Serial.println("Failed to initialize IMU!");
+    while (1);
+  }
+
+//  calibrateIMU(250, 250);
+
+  lastTime = micros();
+
+
+  strip.begin(); //we always need to do this
+  strip.show();
+  for(uint16_t i=0; i<strip.numPixels(); i++) {
+   strip.setPixelColor(i, 0, 0, 0); //set to purple, takes RGB vals 0-255
+      strip.show();
+      }
+
+
+
+}
+
+/*
+  the gyro's x,y,z values drift by a steady amount. if we measure this when arduino is still
+  we can correct the drift when doing real measurements later
+*/
+void calibrateIMU(int delayMillis, int calibrationMillis) {
+
+  int calibrationCount = 0;
+
+  delay(delayMillis); // to avoid shakes after pressing reset button
+
+  float sumX, sumY, sumZ;
+  int startTime = millis();
+  while (millis() < startTime + calibrationMillis) {
+    if (readIMU()) {
+      // in an ideal world gyroX/Y/Z == 0, anything higher or lower represents drift
+      sumX += gyroX;
+      sumY += gyroY;
+      sumZ += gyroZ;
+
+      calibrationCount++;
+    }
+  }
+
+  if (calibrationCount == 0) {
+    Serial.println("Failed to calibrate");
+  }
+
+  gyroDriftX = sumX / calibrationCount;
+  gyroDriftY = sumY / calibrationCount;
+  gyroDriftZ = sumZ / calibrationCount;
+
+}
+
+/**
+   Read accel and gyro data.
+   returns true if value is 'new' and false if IMU is returning old cached data
+*/
+bool readIMU() {
+  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable() ) {
+    IMU.readAcceleration(accelX, accelY, accelZ);
+    IMU.readGyroscope(gyroX, gyroY, gyroZ);
+    return true;
+  }
+  return false;
+}
+
+// the loop function runs over and over again forever
+void loop() {
+
+  if (readIMU()) {
+    long currentTime = micros();
+    lastInterval = currentTime - lastTime; // expecting this to be ~104Hz +- 4%
+    lastTime = currentTime;
+
+    doCalculations();
+    printCalculations();
+
+  }
+
+}
+
+
+
+
+
+
+void checkflip(){ // this function checks if a kickflip is performed and adds 10 to the Red value on LED strip
+
+  if (kickfliping == 1){
+//      Serial.println("kickflipping is true"); 
+      if ((complementaryPitch > -80 and complementaryPitch < 80) or (complementaryPitch  > 85 and complementaryPitch < -85)){
+        kickfliping = 0;
+        Serial.println(flipCounter); 
+      }
+    }
+    else if(kickfliping == 0) {
+//      Serial.println("kickflipping is false"); 
+      if ((complementaryPitch >= 80 and complementaryPitch < 85) or (complementaryPitch <= -80 and complementaryPitch >= -85)){
+        kickfliping = 1; // if the board rolls over  90 degrees 10 added to the global RED value
+        flipCounter += 1;
+        R += colorfactor;
+        
+        Serial.println(flipCounter);
+        
+      }
+    }
+
+//    if (flipCounter == 1){
+//      Serial.println("color changed to blue" );
+//      
+//    }
+//    else if (flipCounter == 2){
+//      Serial.println("color changed to red" );
+//      
+//    }
+//
+//    else if (flipCounter == 3){
+//      Serial.println("color changed to green" );
+//      
+//    }
+//
+//    else if (flipCounter == 4){
+//      Serial.println("color changed to orange" );
+// 
+//    }
+
+    if (flipCounter >= 10){
+      flipCounter = 0;
+      
+      
+    }
+    if (R >= 250){
+      colorfactor = -20;
+    }
+    if(R==0){
+      colorfactor = 20;
+    }
+
+//    Serial.print(",  ");
+
+//    Serial.println(flipCounter);
+}
+
+void checkShuv(){
+  if (shuv == 1){
+//      Serial.println("kickflipping is true"); 
+      if (complementaryYaw < 100){
+        shuv = 0;
+        Serial.println(shuvCounter); 
+      }
+    }
+    else if(shuv == 0) {
+ 
+      if (complementaryYaw >= 100){
+        shuv = 1; // if the board rotates over 100 degrees, 10 is added to the G value and then the gyro is set back to 0 degrees.
+        shuvCounter += 1;
+        G += Scolorfactor;
+//        heading += 90;
+        complementaryYaw = 0;
+        Serial.println("SHUVED!!!!!!!!!!!!!");
+      }
+    }
+
+    if (shuvCounter >= 10){
+      shuvCounter = 0;
+    }
+
+    if (G >= 250){
+      Scolorfactor = -20;
+    }
+    if(G==0){
+      Scolorfactor = 20;
+    }
+    
+}
+
+
+
+
+
+void checkpop(){
+  if (pop == 1){
+      Serial.println("popped"); 
+      if (accRoll > 145 or accRoll < 140){
+        pop = 0;
+        Serial.println(shuvCounter); 
+      }
+    }
+    else if(pop == 0) {
+ 
+      if (accRoll >= 140 and accRoll <= 145){
+        Serial.println("POPPED!!!!!!!!!!");
+        pop = 1;
+        popCounter += 1; // if the board lifts up over 145 degrees a pop is counted and blue 
+        B += Pcolorfactor;
+        Serial.println(popCounter);
+      }
+    }
+
+   
+
+    if (popCounter >= 10){
+      popCounter = 0;
+    }
+
+    if (B >= 250){
+      Pcolorfactor = -20;
+    }
+    if(B==0){
+      Pcolorfactor = 20;
+    }
+
+}
+
+
+
+
+
+
+/**
+   I'm expecting, over time, the Arduino_LSM6DS3.h will add functions to do most of this,
+   but as of 1.0.0 this was missing.
+*/
+void doCalculations() {
+  accRoll = atan2(accelY, accelZ) * 180 / M_PI;
+  accPitch = atan2(-accelX, sqrt(accelY * accelY + accelZ * accelZ)) * 180 / M_PI;
+
+  float lastFrequency = (float) 1000000.0 / lastInterval;
+  gyroRoll = gyroRoll + (gyroX / lastFrequency);
+  gyroPitch = gyroPitch + (gyroY / lastFrequency);
+  gyroYaw = gyroYaw + (gyroZ / lastFrequency);
+
+  gyroCorrectedRoll = gyroCorrectedRoll + ((gyroX - gyroDriftX) / lastFrequency);
+  gyroCorrectedPitch = gyroCorrectedPitch + ((gyroY - gyroDriftY) / lastFrequency);
+  gyroCorrectedYaw = gyroCorrectedYaw + ((gyroZ - gyroDriftZ) / lastFrequency);
+
+  complementaryRoll = complementaryRoll + ((gyroX - gyroDriftX) / lastFrequency);
+  complementaryPitch = complementaryPitch + ((gyroY - gyroDriftY) / lastFrequency);
+  complementaryYaw = complementaryYaw + ((gyroZ - gyroDriftZ) / lastFrequency);
+
+  complementaryRoll = (0.98 * complementaryRoll + 0.02 * accRoll);
+  
+  complementaryPitch = 0.98 * complementaryPitch + 0.02 * accPitch;
+}
+
+/**
+   This comma separated format is best 'viewed' using 'serial plotter' or processing.org client (see ./processing/RollPitchYaw3d.pde example)
+*/
+void printCalculations() {
+
+//  Serial.print(',');
+//  Serial.print(gyroPitch);
+//  Serial.print(',');
+//  Serial.print(gyroYaw);
+//  Serial.print(',');
+//  Serial.print(gyroCorrectedRoll);
+//  Serial.print(',');
+//  Serial.print(gyroCorrectedPitch);
+//  Serial.print(',');
+//  Serial.print(gyroCorrectedYaw);
+//  Serial.print(',');
+//  Serial.print(accRoll);
+//   Serial.print(',');
+//  Serial.print(accPitch);
+//  Serial.print(',');
+//  Serial.print(accYaw);
+//  Serial.print(',');
+//  Serial.print(complementaryRoll);
+//  Serial.print(',');
+//  Serial.print(complementaryPitch);
+//  Serial.print(',');
+//  Serial.print(complementaryYaw);
+//  Serial.println("");
+  Serial.print(R);
+  Serial.print(',');
+  Serial.print(G);
+  Serial.print(',');
+  Serial.print(B);
+  Serial.println("");
+   
+   checkflip();
+   checkShuv();
+   checkpop();
+   
+  for(uint16_t i=0; i<strip.numPixels(); i++) {
+   strip.setPixelColor(i, R, G, B); //changes color based on the global RBG values
+      strip.show();
+      }
+}
